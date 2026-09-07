@@ -12,6 +12,26 @@ set -e
 # -----------------------------
 HYPRLAND_LUA_SRC=""
 NIRI_KDL_SRC=""
+ASK_ALL=false
+
+# -----------------------------
+# 0.0. Defaults del MODO DUEÑO
+# -----------------------------
+# Estos valores se aplican solos, sin preguntar, cuando al arrancar
+# elegís "Soy yo (el dueño del repo)". Editá acá y nada más que acá si
+# querés cambiar qué se instala por defecto.
+#
+# Las categorías de apps (escritorio, capturas, gaming, etc.) se
+# instalan COMPLETAS en modo dueño: lo que define su contenido son las
+# listas DESKTOP_ALL, CAPTURE_ALL, GAMING_ALL, APPS_ALL_BASE,
+# TERMINAL_ALL_BASE y SNAPSHOTS_ALL, más abajo. Si algo ya no lo
+# querés, sacalo de esas listas en vez de desmarcarlo en cada corrida.
+#
+# Con --preguntar-todo se ignoran estos defaults y el modo dueño vuelve
+# a preguntarte categoría por categoría, como el modo invitado.
+OWNER_TERMINAL_EMU="kitty"  # kitty | alacritty | foot | wezterm
+OWNER_PKG_MANAGER="pamac"   # pamac | ninguno
+OWNER_INSTALL_HOWDY=true    # true | false
 
 usage() {
   cat <<EOF
@@ -22,6 +42,8 @@ Opciones:
                           cuando se instale Hyprland "limpio" (sin respaldo)
   --niri-kdl <ruta>       Copia ese archivo como ~/.config/niri/config.kdl
                           cuando se instale Niri "limpio" (sin respaldo)
+  --preguntar-todo        En modo dueño, preguntar categoría por categoría
+                          en vez de aplicar los defaults de arriba
   -h, --help              Muestra esta ayuda
 EOF
 }
@@ -35,6 +57,10 @@ while [[ $# -gt 0 ]]; do
   --niri-kdl)
     NIRI_KDL_SRC="$2"
     shift 2
+    ;;
+  --preguntar-todo)
+    ASK_ALL=true
+    shift
     ;;
   -h | --help)
     usage
@@ -57,6 +83,33 @@ if [[ -n "$NIRI_KDL_SRC" && ! -f "$NIRI_KDL_SRC" ]]; then
   echo "❌ No se encontró el archivo indicado en --niri-kdl: $NIRI_KDL_SRC"
   exit 1
 fi
+
+# Validar los defaults del modo dueño acá arriba: si te equivocaste
+# escribiendo uno, es mejor enterarte ahora y no a mitad de la
+# instalación, cuando pacman falle buscando un paquete inexistente.
+case "$OWNER_TERMINAL_EMU" in
+kitty | alacritty | foot | wezterm) ;;
+*)
+  echo "❌ OWNER_TERMINAL_EMU inválido: '$OWNER_TERMINAL_EMU' (kitty, alacritty, foot o wezterm)"
+  exit 1
+  ;;
+esac
+
+case "$OWNER_PKG_MANAGER" in
+pamac | ninguno) ;;
+*)
+  echo "❌ OWNER_PKG_MANAGER inválido: '$OWNER_PKG_MANAGER' (pamac o ninguno)"
+  exit 1
+  ;;
+esac
+
+case "$OWNER_INSTALL_HOWDY" in
+true | false) ;;
+*)
+  echo "❌ OWNER_INSTALL_HOWDY inválido: '$OWNER_INSTALL_HOWDY' (true o false)"
+  exit 1
+  ;;
+esac
 
 # -----------------------------
 # 0.1. Verificar root
@@ -503,8 +556,10 @@ case "$OWNER_CHOICE" in
 *"Soy yo"*) OWNER_MODE=true ;;
 *) OWNER_MODE=false ;;
 esac
-if $OWNER_MODE; then
-  gum style --foreground 244 "Modo dueño: respaldos se restauran todos por defecto."
+if $OWNER_MODE && $ASK_ALL; then
+  gum style --foreground 244 "Modo dueño + --preguntar-todo: respaldos automáticos, pero se pregunta categoría por categoría."
+elif $OWNER_MODE; then
+  gum style --foreground 244 "Modo dueño: respaldos automáticos y categorías completas, sin preguntar."
 else
   gum style --foreground 244 "Modo invitado: se va a preguntar limpio/restaurar app por app."
 fi
@@ -681,6 +736,15 @@ pick_apps_in_category() {
   shift
   local all_pkgs=("$@")
   show_already_installed "${all_pkgs[@]}"
+
+  # En modo dueño se instala la categoría entera sin abrir el checklist:
+  # el contenido ya está decidido en las listas *_ALL de más abajo.
+  if $OWNER_MODE && ! $ASK_ALL; then
+    SEL_RESULT=("${all_pkgs[@]}")
+    gum style --foreground 244 "  ⏭️  $(strip_emoji "$title") → completo, sin preguntar (modo dueño)"
+    return
+  fi
+
   # shellcheck disable=SC2207
   SEL_RESULT=($(ask_multi \
     "$title — desmarcá lo que NO quieras (espacio, enter para confirmar):" \
@@ -754,8 +818,12 @@ SNAPSHOTS_ALL=(btrfs-assistant btrfs-progs snapper snap-pac)
 
 # Emulador de terminal — pregunta de opción única, no checklist (solo
 # se instala UNO). kitty queda como opción, ya no viene fijo/obligado.
-TERMINAL_EMU_CHOICE=$(ask_choice "🖥️  ¿Qué emulador de terminal querés instalar?" \
-  "kitty" "alacritty" "foot" "wezterm")
+if $OWNER_MODE && ! $ASK_ALL; then
+  TERMINAL_EMU_CHOICE="$OWNER_TERMINAL_EMU"
+else
+  TERMINAL_EMU_CHOICE=$(ask_choice "🖥️  ¿Qué emulador de terminal querés instalar?" \
+    "kitty" "alacritty" "foot" "wezterm")
+fi
 SEL_TERMINAL_EMU="$TERMINAL_EMU_CHOICE"
 gum style --foreground 82 "  ✅ Emulador de terminal: $SEL_TERMINAL_EMU"
 
@@ -763,7 +831,11 @@ gum style --foreground 82 "  ✅ Emulador de terminal: $SEL_TERMINAL_EMU"
 # tu setup original) — en OWNER_MODE ni se ofrece como opción.
 INSTALL_CAT_PAMAC=false
 INSTALL_CAT_OCTOPI=false
-if $OWNER_MODE; then
+if $OWNER_MODE && ! $ASK_ALL; then
+  show_already_installed pamac-aur
+  [[ "$OWNER_PKG_MANAGER" == "pamac" ]] && INSTALL_CAT_PAMAC=true
+  gum style --foreground 244 "  ⏭️  Gestor de paquetes gráfico: $OWNER_PKG_MANAGER (modo dueño)"
+elif $OWNER_MODE; then
   show_already_installed pamac-aur
   PKG_MANAGER_CHOICE=$(ask_choice "📦 ¿Instalar el gestor de paquetes gráfico (pamac)?" "✅ Sí" "❌ No")
   grep -q "Sí" <<<"$PKG_MANAGER_CHOICE" && INSTALL_CAT_PAMAC=true
@@ -794,8 +866,13 @@ SEL_TERMINAL=("${SEL_RESULT[@]}")
 
 # Autenticación facial (un solo paquete → sí/no, no picker)
 show_already_installed howdy-git
-HOWDY_CHOICE=$(ask_choice "🔐 ¿Instalar autenticación facial (howdy)?" "✅ Sí" "❌ No")
-grep -q "Sí" <<<"$HOWDY_CHOICE" && INSTALL_CAT_HOWDY=true
+if $OWNER_MODE && ! $ASK_ALL; then
+  INSTALL_CAT_HOWDY=$OWNER_INSTALL_HOWDY
+  gum style --foreground 244 "  ⏭️  Autenticación facial (howdy): $OWNER_INSTALL_HOWDY (modo dueño)"
+else
+  HOWDY_CHOICE=$(ask_choice "🔐 ¿Instalar autenticación facial (howdy)?" "✅ Sí" "❌ No")
+  grep -q "Sí" <<<"$HOWDY_CHOICE" && INSTALL_CAT_HOWDY=true
+fi
 
 pick_apps_in_category "🗂️  Snapshots BTRFS" "${SNAPSHOTS_ALL[@]}"
 SEL_SNAPSHOTS=("${SEL_RESULT[@]}")
@@ -1696,6 +1773,38 @@ EOF
       continue
       ;;
     esac
+
+    # Carpeta de ESTADO de aplicaciones: va a ~/.local/state/, no a
+    # ~/.config. Es donde apps como Noctalia guardan lo que no es
+    # configuración declarativa (último wallpaper, estado de la barra,
+    # etc.). Se recorre subcarpeta por subcarpeta en vez de copiar todo
+    # de una para poder respetar las elecciones limpio/restaurar que ya
+    # se hicieron por app en la sección 0.8.
+    if [ "$folder" = "state" ]; then
+      STATE_DIR="$USER_HOME/.local/state"
+      sudo -u "$REAL_USER" mkdir -p "$STATE_DIR"
+
+      for STATE_SRC in "$SRC"*/; do
+        [ -d "$STATE_SRC" ] || continue
+        state_app=$(basename "$STATE_SRC")
+
+        if [ "$state_app" = "noctalia" ] && ! $INSTALL_NOCTALIA; then
+          gum style --foreground 244 "  ⏭️  state/noctalia → omitido (Noctalia no se instaló)"
+          continue
+        fi
+        if [ "$state_app" = "noctalia" ] && ! $RESTORE_NOCTALIA_CONFIG; then
+          gum style --foreground 244 "  ⏭️  state/noctalia → omitido (se pidió Noctalia limpio)"
+          continue
+        fi
+
+        rm -rf "${STATE_DIR:?}/$state_app"
+        cp -r "$STATE_SRC" "$STATE_DIR/$state_app"
+        chown -R "$REAL_USER:$REAL_USER" "$STATE_DIR/$state_app"
+        gum style --foreground 82 "  ✅ state/$state_app → $STATE_DIR/$state_app/"
+      done
+
+      continue
+    fi
 
     # Carpeta especial: unidades systemd de usuario (services/timers),
     # que NO van a ~/.config/<folder> tal cual sino a
